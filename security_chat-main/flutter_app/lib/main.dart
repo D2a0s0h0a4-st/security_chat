@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 
 import 'screens/chats.dart';
@@ -10,28 +8,27 @@ import 'theme/app_theme.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Для тестов через ngrok на Android/Windows.
-  // Это ослабляет проверку сертификатов, поэтому для продакшена так не оставляют.
-  
+  try {
+    await Session.instance.init();
+  } catch (e) {
+    debugPrint('Session init failed: $e');
+  }
 
-  await Session.instance.init();
   runApp(const App());
 }
-
-
 
 class App extends StatelessWidget {
   const App({super.key});
 
   @override
   Widget build(BuildContext context) {
+    final isAuthed = Session.instance.isAuthed;
+
     return MaterialApp(
       title: 'Защищённый чат',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light(),
-      home: Session.instance.isAuthed
-          ? const ChatsScreen()
-          : const LoginScreen(),
+      home: isAuthed ? const ChatsScreen() : const LoginScreen(),
     );
   }
 }

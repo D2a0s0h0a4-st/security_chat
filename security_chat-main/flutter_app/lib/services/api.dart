@@ -11,7 +11,8 @@ class Api {
 
   final http.Client _client = http.Client();
 
-  String baseUrl = 'https://securitychat-production.up.railway.app';
+  // Новая ссылка Railway. Без /docs и без :8080.
+  String baseUrl = 'https://securitychat-production-649c.up.railway.app';
 
   Map<String, String> _headers({required bool auth, bool json = false}) {
     return {
@@ -38,6 +39,30 @@ class Api {
       throw Exception('POST $path -> ${res.statusCode}: ${res.body}');
     }
 
+    if (res.body.isEmpty) return {};
+
+    return jsonDecode(res.body);
+  }
+
+  Future<Map<String, dynamic>> put(
+    String path,
+    Map<String, dynamic> body, {
+    bool auth = true,
+  }) async {
+    final uri = Uri.parse('$baseUrl$path');
+
+    final res = await _client.put(
+      uri,
+      headers: _headers(auth: auth, json: true),
+      body: jsonEncode(body),
+    );
+
+    if (res.statusCode >= 400) {
+      throw Exception('PUT $path -> ${res.statusCode}: ${res.body}');
+    }
+
+    if (res.body.isEmpty) return {};
+
     return jsonDecode(res.body);
   }
 
@@ -53,6 +78,8 @@ class Api {
       throw Exception('GET $path -> ${res.statusCode}: ${res.body}');
     }
 
+    if (res.body.isEmpty) return [];
+
     return jsonDecode(res.body);
   }
 
@@ -67,6 +94,8 @@ class Api {
     if (res.statusCode >= 400) {
       throw Exception('GET $path -> ${res.statusCode}: ${res.body}');
     }
+
+    if (res.body.isEmpty) return {};
 
     return jsonDecode(res.body);
   }

@@ -12,6 +12,7 @@ class Session {
   String? token;
   int? userId;
   int? deviceId;
+  String? role;
 
   String? deviceName;
   String? x25519PrivateKeyB64;
@@ -22,6 +23,8 @@ class Session {
   static const _kToken = 'token';
   static const _kUserId = 'userId';
   static const _kDeviceId = 'deviceId';
+  static const _kRole = 'role';
+
   static const _kDeviceName = 'deviceName';
   static const _kXPriv = 'xPriv';
   static const _kXPub = 'xPub';
@@ -31,31 +34,60 @@ class Session {
   static String _chatKeyStorageKey(int chatId) => 'chatKey_$chatId';
 
   Future<void> init() async {
-  try {
-    token = await _storage.read(key: _kToken);
+    try {
+      token = await _storage.read(key: _kToken);
 
-    final userIdStr = await _storage.read(key: _kUserId);
-    userId = userIdStr == null ? null : int.tryParse(userIdStr);
+      final userIdStr = await _storage.read(key: _kUserId);
+      userId = userIdStr == null ? null : int.tryParse(userIdStr);
 
-    final deviceIdStr = await _storage.read(key: _kDeviceId);
-    deviceId = deviceIdStr == null ? null : int.tryParse(deviceIdStr);
+      final deviceIdStr = await _storage.read(key: _kDeviceId);
+      deviceId = deviceIdStr == null ? null : int.tryParse(deviceIdStr);
 
-    deviceName = await _storage.read(key: _kDeviceName);
-    x25519PrivateKeyB64 = await _storage.read(key: _kXPriv);
-    x25519PublicKeyB64 = await _storage.read(key: _kXPub);
-    ed25519PrivateKeyB64 = await _storage.read(key: _kEdPriv);
-    ed25519PublicKeyB64 = await _storage.read(key: _kEdPub);
-  } catch (e) {
-    print('SECURE STORAGE ERROR: $e');
+      role = await _storage.read(key: _kRole);
 
-    // Сброс всего чтобы не падало
-    token = null;
-    userId = null;
-    deviceId = null;
+      deviceName = await _storage.read(key: _kDeviceName);
+      x25519PrivateKeyB64 = await _storage.read(key: _kXPriv);
+      x25519PublicKeyB64 = await _storage.read(key: _kXPub);
+      ed25519PrivateKeyB64 = await _storage.read(key: _kEdPriv);
+      ed25519PublicKeyB64 = await _storage.read(key: _kEdPub);
+    } catch (e) {
+      print('SECURE STORAGE ERROR: $e');
+
+      token = null;
+      userId = null;
+      deviceId = null;
+      role = null;
+
+      deviceName = null;
+      x25519PrivateKeyB64 = null;
+      x25519PublicKeyB64 = null;
+      ed25519PrivateKeyB64 = null;
+      ed25519PublicKeyB64 = null;
+    }
   }
-}
 
   bool get isAuthed => token != null && userId != null;
+
+  bool get isAdmin => role == 'admin';
+
+  bool get isManager => role == 'manager';
+
+  bool get isEmployee => role == 'employee' || role == null;
+
+  bool get canCreateGroupChats => role == 'admin' || role == 'manager';
+
+  String get roleTitle {
+    switch (role) {
+      case 'admin':
+        return 'Администратор';
+      case 'manager':
+        return 'Руководитель';
+      case 'employee':
+        return 'Сотрудник';
+      default:
+        return 'Сотрудник';
+    }
+  }
 
   bool get hasDeviceKeys =>
       x25519PrivateKeyB64 != null &&
@@ -67,12 +99,18 @@ class Session {
       ed25519PublicKeyB64 != null &&
       ed25519PublicKeyB64!.isNotEmpty;
 
-  Future<void> saveAuth({required String token, required int userId}) async {
+  Future<void> saveAuth({
+    required String token,
+    required int userId,
+    required String role,
+  }) async {
     this.token = token;
     this.userId = userId;
+    this.role = role;
 
     await _storage.write(key: _kToken, value: token);
     await _storage.write(key: _kUserId, value: userId.toString());
+    await _storage.write(key: _kRole, value: role);
   }
 
   Future<void> saveDevice({
@@ -108,7 +146,13 @@ class Session {
   Future<Uint8List?> getChatKey(int chatId) async {
     final raw = await _storage.read(key: _chatKeyStorageKey(chatId));
     if (raw == null || raw.isEmpty) return null;
-    return Uint8List.fromList(base64Decode(raw));
+
+    try {
+      return Uint8List.fromList(base64Decode(raw));
+    } catch (e) {
+      print('CHAT KEY DECODE ERROR: $e');
+      return null;
+    }
   }
 
   Future<void> deleteChatKey(int chatId) async {
@@ -116,27 +160,32 @@ class Session {
   }
 
   Map<String, String> authHeaders() {
-    if (token == null) return const {};
+    if (token == null || token!.isEmpty) return const {};
     return {'Authorization': 'Bearer $token'};
   }
 
   Future<void> logout() async {
     token = null;
     userId = null;
+    role = null;
 
     await _storage.delete(key: _kToken);
     await _storage.delete(key: _kUserId);
+    await _storage.delete(key: _kRole);
   }
 
   Future<void> wipeDevice() async {
     token = null;
     userId = null;
     deviceId = null;
+    role = null;
+
     deviceName = null;
     x25519PrivateKeyB64 = null;
     x25519PublicKeyB64 = null;
     ed25519PrivateKeyB64 = null;
     ed25519PublicKeyB64 = null;
+
     await _storage.deleteAll();
   }
 }

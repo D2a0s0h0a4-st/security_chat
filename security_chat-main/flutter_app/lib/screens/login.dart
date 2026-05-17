@@ -32,7 +32,10 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _ensureDeviceBoundToUser() async {
-    final myUserId = Session.instance.userId!;
+    final myUserId = Session.instance.userId;
+    if (myUserId == null) {
+      throw Exception('Не удалось определить пользователя');
+    }
 
     String? priv = Session.instance.x25519PrivateKeyB64;
     String? pub = Session.instance.x25519PublicKeyB64;
@@ -56,9 +59,11 @@ class _LoginScreenState extends State<LoginScreen> {
     final deviceName =
         Session.instance.deviceName ?? 'device-${Random().nextInt(9999)}';
 
-    final existingDevices = await Api.instance.getList('/users/$myUserId/devices');
+    final existingDevices =
+        await Api.instance.getList('/users/$myUserId/devices');
 
     Map<String, dynamic>? sameDevice;
+
     for (final d in existingDevices.cast<Map<String, dynamic>>()) {
       if (d['pubkey_b64'] == pub) {
         sameDevice = d;
@@ -68,22 +73,26 @@ class _LoginScreenState extends State<LoginScreen> {
 
     if (sameDevice != null) {
       final existingId = sameDevice['id'] as int;
+      final existingDeviceName =
+          sameDevice['device_name'] as String? ?? deviceName;
 
       await Session.instance.saveDevice(
         deviceId: existingId,
-        deviceName: sameDevice['device_name'] as String? ?? deviceName,
+        deviceName: existingDeviceName,
         xPriv: priv,
         xPub: pub,
         edPriv: edPriv,
         edPub: edPub,
       );
+
       if ((sameDevice['sign_pubkey_b64']?.toString() ?? '') != edPub) {
         await Api.instance.post('/devices', {
-          'device_name': sameDevice['device_name'] as String? ?? deviceName,
+          'device_name': existingDeviceName,
           'pubkey_b64': pub,
           'sign_pubkey_b64': edPub,
         });
       }
+
       return;
     }
 
@@ -123,31 +132,50 @@ class _LoginScreenState extends State<LoginScreen> {
         throw Exception('Введите логин и пароль');
       }
 
+      if (username.length < 3) {
+        throw Exception('Логин должен быть не короче 3 символов');
+      }
+
+      if (password.length < 6) {
+        throw Exception('Пароль должен быть не короче 6 символов');
+      }
+
       final path = _isLogin ? '/auth/login' : '/auth/register';
 
       final res = await Api.instance.post(
         path,
-        {'username': username, 'password': password},
+        {
+          'username': username,
+          'password': password,
+        },
         auth: false,
       );
 
       await Session.instance.saveAuth(
-        token: res['access_token'],
-        userId: res['user_id'],
+        token: res['access_token'].toString(),
+        userId: res['user_id'] as int,
+        role: (res['role'] ?? 'employee').toString(),
       );
 
       await _ensureDeviceBoundToUser();
       await ChatKeyService.instance.importMyChatKeys();
 
       if (!mounted) return;
+
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (_) => const ChatsScreen()),
       );
     } catch (e) {
-      setState(() => _err = e.toString().replaceFirst('Exception: ', ''));
+      if (!mounted) return;
+
+      setState(() {
+        _err = e.toString().replaceFirst('Exception: ', '');
+      });
     } finally {
       if (mounted) {
-        setState(() => _busy = false);
+        setState(() {
+          _busy = false;
+        });
       }
     }
   }
@@ -193,7 +221,9 @@ class _LoginScreenState extends State<LoginScreen> {
                             color: AppTheme.primary,
                           ),
                         ),
+
                         const SizedBox(height: 20),
+
                         const Text(
                           'Защищённый чат',
                           style: TextStyle(
@@ -202,7 +232,9 @@ class _LoginScreenState extends State<LoginScreen> {
                             color: AppTheme.textPrimary,
                           ),
                         ),
+
                         const SizedBox(height: 8),
+
                         const Text(
                           'Безопасный обмен сообщениями и файлами в корпоративной сети.',
                           style: TextStyle(
@@ -211,7 +243,9 @@ class _LoginScreenState extends State<LoginScreen> {
                             height: 1.4,
                           ),
                         ),
+
                         const SizedBox(height: 28),
+
                         Text(
                           title,
                           style: const TextStyle(
@@ -219,9 +253,12 @@ class _LoginScreenState extends State<LoginScreen> {
                             fontWeight: FontWeight.w700,
                           ),
                         ),
+
                         const SizedBox(height: 16),
+
                         TextField(
                           controller: _u,
+                          enabled: !_busy,
                           textInputAction: TextInputAction.next,
                           decoration: const InputDecoration(
                             labelText: 'Логин',
@@ -229,9 +266,12 @@ class _LoginScreenState extends State<LoginScreen> {
                             prefixIcon: Icon(Icons.person_outline_rounded),
                           ),
                         ),
+
                         const SizedBox(height: 14),
+
                         TextField(
                           controller: _p,
+                          enabled: !_busy,
                           obscureText: true,
                           onSubmitted: (_) => _submit(),
                           decoration: const InputDecoration(
@@ -240,6 +280,7 @@ class _LoginScreenState extends State<LoginScreen> {
                             prefixIcon: Icon(Icons.lock_outline_rounded),
                           ),
                         ),
+
                         if (_err != null) ...[
                           const SizedBox(height: 14),
                           Container(
@@ -247,7 +288,9 @@ class _LoginScreenState extends State<LoginScreen> {
                             decoration: BoxDecoration(
                               color: const Color(0xFFFEECEC),
                               borderRadius: BorderRadius.circular(16),
-                              border: Border.all(color: const Color(0xFFF7C9C9)),
+                              border: Border.all(
+                                color: const Color(0xFFF7C9C9),
+                              ),
                             ),
                             child: Text(
                               _err!,
@@ -258,12 +301,16 @@ class _LoginScreenState extends State<LoginScreen> {
                             ),
                           ),
                         ],
+
                         const SizedBox(height: 18),
+
                         FilledButton(
                           onPressed: _busy ? null : _submit,
                           child: Text(_busy ? 'Подождите...' : buttonText),
                         ),
+
                         const SizedBox(height: 12),
+
                         Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
@@ -276,11 +323,29 @@ class _LoginScreenState extends State<LoginScreen> {
                             TextButton(
                               onPressed: _busy
                                   ? null
-                                  : () => setState(() => _isLogin = !_isLogin),
+                                  : () {
+                                      setState(() {
+                                        _isLogin = !_isLogin;
+                                        _err = null;
+                                      });
+                                    },
                               child: Text(switchAction),
                             ),
                           ],
                         ),
+
+                        if (!_isLogin) ...[
+                          const SizedBox(height: 10),
+                          const Text(
+                            'Первый зарегистрированный пользователь автоматически получает роль администратора.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: AppTheme.textSecondary,
+                              height: 1.35,
+                            ),
+                          ),
+                        ],
                       ],
                     ),
                   ),

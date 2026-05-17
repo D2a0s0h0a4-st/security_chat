@@ -14,7 +14,7 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from sqlalchemy import select
+from sqlalchemy import select, text, func
 from fastapi.responses import FileResponse
 from jose import jwt
 
@@ -26,9 +26,11 @@ from .auth import (
     verify_password,
     create_access_token,
     get_current_user,
+    require_admin,
 )
 from .config import UPLOAD_DIR, MAX_UPLOAD_MB, JWT_SECRET, JWT_ALG
 from .realtime import manager
+
 
 app = FastAPI(title="Secure Corporate Chat Backend")
 
@@ -58,6 +60,21 @@ def on_startup():
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     Base.metadata.create_all(bind=engine)
 
+    # Небольшая автопроверка для старых баз.
+    # Если база новая, ничего лишнего не произойдёт.
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "ALTER TABLE users "
+                    "ADD COLUMN IF NOT EXISTS role VARCHAR(32) NOT NULL DEFAULT 'employee'"
+                )
+            )
+    except Exception:
+        # Для SQLite старых версий IF NOT EXISTS может не поддерживаться.
+        # Поэтому просто игнорируем: на новой базе колонка создаётся через models.py.
+        pass
+
 
 @app.post("/auth/register", response_model=TokenOut)
 def register(data: RegisterIn, db: Session = Depends(get_db)):
@@ -65,16 +82,24 @@ def register(data: RegisterIn, db: Session = Depends(get_db)):
     if existing:
         raise HTTPException(status_code=400, detail="Username already exists")
 
+    users_count = db.scalar(select(func.count(User.id))) or 0
+    role = "admin" if users_count == 0 else "employee"
+
     user = User(
         username=data.username,
         password_hash=hash_password(data.password),
+        role=role,
     )
     db.add(user)
     db.commit()
     db.refresh(user)
 
     token = create_access_token(user.id)
-    return TokenOut(access_token=token, user_id=user.id)
+    return TokenOut(
+        access_token=token,
+        user_id=user.id,
+        role=user.role,
+    )
 
 
 @app.post("/auth/login", response_model=TokenOut)
@@ -84,7 +109,69 @@ def login(data: RegisterIn, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     token = create_access_token(user.id)
-    return TokenOut(access_token=token, user_id=user.id)
+    return TokenOut(
+        access_token=token,
+        user_id=user.id,
+        role=user.role,
+    )
+
+
+@app.post("/auth/change-password")
+def change_password(
+    data: ChangePasswordIn,
+    me: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    user = db.get(User, me.id)
+
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    if not verify_password(data.current_password, user.password_hash):
+        raise HTTPException(400, "Неверный текущий пароль")
+
+    user.password_hash = hash_password(data.new_password)
+    db.commit()
+
+    return {"status": "ok"}
+
+
+@app.get("/me", response_model=UserOut)
+def get_me(me: User = Depends(get_current_user)):
+    return UserOut(id=me.id, username=me.username, role=me.role)
+
+
+@app.get("/admin/users", response_model=list[UserOut])
+def list_users_for_admin(
+    me: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    users = db.scalars(select(User).order_by(User.username.asc())).all()
+    return [
+        UserOut(id=u.id, username=u.username, role=u.role)
+        for u in users
+    ]
+
+
+@app.put("/admin/users/{user_id}/role", response_model=UserOut)
+def update_user_role(
+    user_id: int,
+    data: RoleUpdateIn,
+    me: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    target = db.get(User, user_id)
+    if not target:
+        raise HTTPException(404, "User not found")
+
+    if target.id == me.id and data.role.value != "admin":
+        raise HTTPException(400, "Нельзя снять роль администратора с самого себя")
+
+    target.role = data.role.value
+    db.commit()
+    db.refresh(target)
+
+    return UserOut(id=target.id, username=target.username, role=target.role)
 
 
 @app.post("/devices", response_model=DeviceOut)
@@ -100,11 +187,13 @@ def add_device(
             Device.is_active == True,
         )
     )
+
     if existing:
         if getattr(existing, "sign_pubkey_b64", "") != data.sign_pubkey_b64:
             existing.sign_pubkey_b64 = data.sign_pubkey_b64
             db.commit()
             db.refresh(existing)
+
         return DeviceOut(
             id=existing.id,
             device_name=existing.device_name,
@@ -142,7 +231,8 @@ def get_user_by_username(
     u = db.scalar(select(User).where(User.username == username))
     if not u:
         raise HTTPException(404, "Not found")
-    return UserOut(id=u.id, username=u.username)
+
+    return UserOut(id=u.id, username=u.username, role=u.role)
 
 
 @app.get("/users/{user_id}/devices", response_model=list[DeviceOut])
@@ -176,10 +266,19 @@ def create_chat(
     me: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    if data.is_group and me.role not in ("admin", "manager"):
+        raise HTTPException(
+            403,
+            "Групповые чаты может создавать только руководитель или администратор",
+        )
+
     usernames = set(data.member_usernames)
     usernames.add(me.username)
 
-    users = db.scalars(select(User).where(User.username.in_(list(usernames)))).all()
+    users = db.scalars(
+        select(User).where(User.username.in_(list(usernames)))
+    ).all()
+
     if len(users) != len(usernames):
         raise HTTPException(400, "One or more usernames not found")
 
@@ -190,6 +289,7 @@ def create_chat(
 
     for u in users:
         db.add(ChatMember(chat_id=chat.id, user_id=u.id))
+
     db.commit()
 
     return ChatOut(id=chat.id, is_group=chat.is_group, title=chat.title)
@@ -208,10 +308,15 @@ def list_my_chats(
         return []
 
     chats = db.scalars(
-        select(Chat).where(Chat.id.in_(chat_ids)).order_by(Chat.created_at.desc())
+        select(Chat)
+        .where(Chat.id.in_(chat_ids))
+        .order_by(Chat.created_at.desc())
     ).all()
 
-    return [ChatOut(id=c.id, is_group=c.is_group, title=c.title) for c in chats]
+    return [
+        ChatOut(id=c.id, is_group=c.is_group, title=c.title)
+        for c in chats
+    ]
 
 
 @app.delete("/chats/{chat_id}")
@@ -220,13 +325,19 @@ def delete_chat(
     me: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    _ensure_chat_member(db, chat_id, me.id)
-
     chat = db.get(Chat, chat_id)
     if not chat:
         raise HTTPException(404, "Chat not found")
 
-    attachments = db.scalars(select(Attachment).where(Attachment.chat_id == chat_id)).all()
+    # Администратор может удалить любой чат.
+    # Остальные пользователи — только чат, где они являются участниками.
+    if me.role != "admin":
+        _ensure_chat_member(db, chat_id, me.id)
+
+    attachments = db.scalars(
+        select(Attachment).where(Attachment.chat_id == chat_id)
+    ).all()
+
     for att in attachments:
         try:
             if os.path.exists(att.path):
@@ -235,15 +346,24 @@ def delete_chat(
             pass
         db.delete(att)
 
-    messages = db.scalars(select(Message).where(Message.chat_id == chat_id)).all()
+    messages = db.scalars(
+        select(Message).where(Message.chat_id == chat_id)
+    ).all()
+
     for msg in messages:
         db.delete(msg)
 
-    chat_keys = db.scalars(select(ChatKey).where(ChatKey.chat_id == chat_id)).all()
+    chat_keys = db.scalars(
+        select(ChatKey).where(ChatKey.chat_id == chat_id)
+    ).all()
+
     for key in chat_keys:
         db.delete(key)
 
-    members = db.scalars(select(ChatMember).where(ChatMember.chat_id == chat_id)).all()
+    members = db.scalars(
+        select(ChatMember).where(ChatMember.chat_id == chat_id)
+    ).all()
+
     for member in members:
         db.delete(member)
 
@@ -266,7 +386,11 @@ def list_chat_members(
     ).all()
 
     users = db.scalars(select(User).where(User.id.in_(user_ids))).all()
-    return [UserOut(id=u.id, username=u.username) for u in users]
+
+    return [
+        UserOut(id=u.id, username=u.username, role=u.role)
+        for u in users
+    ]
 
 
 @app.post("/chat_keys")
@@ -306,6 +430,7 @@ def upsert_chat_key(
     )
     db.add(ck)
     db.commit()
+
     return {"status": "created"}
 
 
@@ -319,13 +444,17 @@ def get_my_chat_keys(
     if not my_device or my_device.user_id != me.id:
         raise HTTPException(400, "Invalid device")
 
-    keys = db.scalars(select(ChatKey).where(ChatKey.device_id == device_id)).all()
+    keys = db.scalars(
+        select(ChatKey).where(ChatKey.device_id == device_id)
+    ).all()
 
     out: list[ChatKeyOut] = []
+
     for k in keys:
         wrapped_by = db.get(Device, k.wrapped_by_device_id)
         if wrapped_by is None:
             continue
+
         out.append(
             ChatKeyOut(
                 chat_id=k.chat_id,
@@ -335,6 +464,7 @@ def get_my_chat_keys(
                 wrapped_by_pubkey_b64=wrapped_by.pubkey_b64,
             )
         )
+
     return out
 
 
@@ -346,8 +476,14 @@ def get_chat_key_devices(
 ):
     _ensure_chat_member(db, chat_id, me.id)
 
-    rows = db.scalars(select(ChatKey).where(ChatKey.chat_id == chat_id)).all()
-    return [ChatKeyDeviceOut(device_id=r.device_id) for r in rows]
+    rows = db.scalars(
+        select(ChatKey).where(ChatKey.chat_id == chat_id)
+    ).all()
+
+    return [
+        ChatKeyDeviceOut(device_id=r.device_id)
+        for r in rows
+    ]
 
 
 @app.post("/messages", response_model=MessageOut)
@@ -387,12 +523,19 @@ def send_message(
         signature_b64=msg.signature_b64,
         sig_alg=msg.sig_alg,
         created_at=msg.created_at.isoformat(),
+        is_deleted=msg.is_deleted,
     )
 
     for uid in member_ids:
         try:
             asyncio.create_task(
-                manager.send_to_user(uid, {"type": "message", "data": out.model_dump()})
+                manager.send_to_user(
+                    uid,
+                    {
+                        "type": "message",
+                        "data": out.model_dump(),
+                    },
+                )
             )
         except RuntimeError:
             pass
@@ -419,19 +562,44 @@ def list_messages(
     msgs = list(reversed(msgs))
 
     return [
-    MessageOut(
-        id=m.id,
-        chat_id=m.chat_id,
-        sender_user_id=m.sender_user_id,
-        sender_device_id=m.sender_device_id,
-        payload_json=m.payload_json,
-        signature_b64=m.signature_b64,
-        sig_alg=m.sig_alg,
-        created_at=m.created_at.isoformat(),
-        is_deleted=m.is_deleted,
-    )
-    for m in msgs
-]
+        MessageOut(
+            id=m.id,
+            chat_id=m.chat_id,
+            sender_user_id=m.sender_user_id,
+            sender_device_id=m.sender_device_id,
+            payload_json=m.payload_json,
+            signature_b64=m.signature_b64,
+            sig_alg=m.sig_alg,
+            created_at=m.created_at.isoformat(),
+            is_deleted=m.is_deleted,
+        )
+        for m in msgs
+    ]
+
+
+@app.delete("/messages/{message_id}")
+def delete_message(
+    message_id: int,
+    me: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    msg = db.get(Message, message_id)
+    if not msg:
+        raise HTTPException(404, "Message not found")
+
+    # Администратор может удалить любое сообщение.
+    # Сотрудник и руководитель — только своё.
+    if msg.sender_user_id != me.id:
+        if me.role != "admin":
+            raise HTTPException(403, "You can delete only your messages")
+
+    if me.role != "admin":
+        _ensure_chat_member(db, msg.chat_id, me.id)
+
+    msg.is_deleted = True
+    db.commit()
+
+    return {"status": "deleted", "message_id": message_id}
 
 
 @app.post("/attachments", response_model=UploadOut)
@@ -445,6 +613,7 @@ async def upload_attachment(
 
     max_bytes = MAX_UPLOAD_MB * 1024 * 1024
     data = await file.read()
+
     if len(data) > max_bytes:
         raise HTTPException(413, f"Max upload {MAX_UPLOAD_MB}MB")
 
@@ -486,10 +655,15 @@ def download_attachment(
         raise HTTPException(404, "Not found")
 
     _ensure_chat_member(db, att.chat_id, me.id)
+
     if not os.path.exists(att.path):
         raise HTTPException(404, "Attachment file not found")
 
-    return FileResponse(att.path, media_type=att.content_type, filename=att.filename)
+    return FileResponse(
+        att.path,
+        media_type=att.content_type,
+        filename=att.filename,
+    )
 
 
 @app.websocket("/ws")
@@ -502,44 +676,9 @@ async def ws_endpoint(ws: WebSocket, token: str = Query(...)):
         return
 
     await manager.connect(user_id, ws)
+
     try:
         while True:
             await ws.receive_text()
     except Exception:
         pass
-
-@app.delete("/messages/{message_id}")
-def delete_message(
-    message_id: int,
-    me: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    msg = db.get(Message, message_id)
-    if not msg:
-        raise HTTPException(404, "Message not found")
-
-    _ensure_chat_member(db, msg.chat_id, me.id)
-
-    if msg.sender_user_id != me.id:
-        raise HTTPException(403, "You can delete only your messages")
-
-    msg.is_deleted = True
-    db.commit()
-
-    return {"status": "deleted", "message_id": message_id}
-
-@app.post("/auth/change-password")
-def change_password(
-    data: ChangePasswordIn,
-    me: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    user = db.get(User, me.id)
-
-    if not verify_password(data.current_password, user.password_hash):
-        raise HTTPException(400, "Неверный текущий пароль")
-
-    user.password_hash = hash_password(data.new_password)
-    db.commit()
-
-    return {"status": "ok"}

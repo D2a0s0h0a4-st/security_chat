@@ -1,5 +1,13 @@
-from pydantic import BaseModel, Field
+from enum import Enum
 from typing import Optional, List
+
+from pydantic import BaseModel, Field
+
+
+class UserRole(str, Enum):
+    admin = "admin"
+    manager = "manager"
+    employee = "employee"
 
 
 class RegisterIn(BaseModel):
@@ -7,10 +15,26 @@ class RegisterIn(BaseModel):
     password: str = Field(min_length=6, max_length=128)
 
 
+class ChangePasswordIn(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=6, max_length=128)
+
+
 class TokenOut(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user_id: int
+    role: UserRole
+
+
+class UserOut(BaseModel):
+    id: int
+    username: str
+    role: UserRole
+
+
+class RoleUpdateIn(BaseModel):
+    role: UserRole
 
 
 class AddDeviceIn(BaseModel):
@@ -25,11 +49,6 @@ class DeviceOut(BaseModel):
     pubkey_b64: str
     sign_pubkey_b64: str
     is_active: bool
-
-
-class UserOut(BaseModel):
-    id: int
-    username: str
 
 
 class ChatCreateIn(BaseModel):
@@ -88,7 +107,3 @@ class ChatKeyOut(BaseModel):
 
 class ChatKeyDeviceOut(BaseModel):
     device_id: int
-
-class ChangePasswordIn(BaseModel):
-    current_password: str
-    new_password: str = Field(min_length=6, max_length=128)

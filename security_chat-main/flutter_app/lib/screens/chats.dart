@@ -4,10 +4,11 @@ import '../services/api.dart';
 import '../services/chat_key_service.dart';
 import '../services/session.dart';
 import '../theme/app_theme.dart';
+import 'admin_users.dart';
+import 'change_password.dart';
 import 'chat_view.dart';
 import 'create_chat.dart';
 import 'login.dart';
-import 'change_password.dart';
 
 class ChatsScreen extends StatefulWidget {
   const ChatsScreen({super.key});
@@ -55,6 +56,7 @@ class _ChatsScreenState extends State<ChatsScreen> {
       }
 
       if (!mounted) return;
+
       setState(() {
         chats = loadedChats;
         _membersByChat = membersByChat;
@@ -62,6 +64,7 @@ class _ChatsScreenState extends State<ChatsScreen> {
       });
     } catch (e) {
       if (!mounted) return;
+
       setState(() {
         err = e.toString().replaceFirst('Exception: ', '');
         loading = false;
@@ -95,10 +98,7 @@ class _ChatsScreenState extends State<ChatsScreen> {
 
     try {
       await Api.instance.delete('/chats/$chatId');
-
-      // удаляем ключ чата с устройства
       await Session.instance.deleteChatKey(chatId);
-
       await _load();
     } catch (e) {
       if (!mounted) return;
@@ -119,10 +119,23 @@ class _ChatsScreenState extends State<ChatsScreen> {
     }
   }
 
+  Future<void> _openAdminUsers() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const AdminUsersScreen()),
+    );
+  }
+
+  Future<void> _openChangePassword() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const ChangePasswordScreen()),
+    );
+  }
+
   Future<void> _logout() async {
     await Session.instance.logout();
 
     if (!mounted) return;
+
     Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(builder: (_) => const LoginScreen()),
       (route) => false,
@@ -143,6 +156,7 @@ class _ChatsScreenState extends State<ChatsScreen> {
         .toList();
 
     if (otherUsers.isEmpty) return 'Личный защищённый чат';
+
     return otherUsers.join(', ');
   }
 
@@ -153,6 +167,7 @@ class _ChatsScreenState extends State<ChatsScreen> {
     return chats.where((chat) {
       final title = (chat['title'] ?? '').toString().toLowerCase();
       final subtitle = _chatSubtitle(chat).toLowerCase();
+
       return title.contains(q) || subtitle.contains(q);
     }).toList();
   }
@@ -167,19 +182,26 @@ class _ChatsScreenState extends State<ChatsScreen> {
         title: const Text('Защищённый чат'),
         actions: [
           IconButton(
+            tooltip: 'Обновить',
             onPressed: _load,
             icon: const Icon(Icons.refresh_rounded),
           ),
+
+          if (Session.instance.isAdmin)
+            IconButton(
+              tooltip: 'Права доступа',
+              onPressed: _openAdminUsers,
+              icon: const Icon(Icons.admin_panel_settings_outlined),
+            ),
+
           IconButton(
-  icon: const Icon(Icons.lock_reset),
-  onPressed: () {
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const ChangePasswordScreen()),
-    );
-  },
-),
-          
+            tooltip: 'Сменить пароль',
+            onPressed: _openChangePassword,
+            icon: const Icon(Icons.lock_reset),
+          ),
+
           IconButton(
+            tooltip: 'Выйти',
             onPressed: _logout,
             icon: const Icon(Icons.logout_rounded),
           ),
@@ -193,6 +215,17 @@ class _ChatsScreenState extends State<ChatsScreen> {
       body: SafeArea(
         child: Column(
           children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Chip(
+                  avatar: const Icon(Icons.verified_user_outlined, size: 18),
+                  label: Text('Роль: ${Session.instance.roleTitle}'),
+                ),
+              ),
+            ),
+
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
               child: TextField(
@@ -208,47 +241,59 @@ class _ChatsScreenState extends State<ChatsScreen> {
                 ),
               ),
             ),
+
             Expanded(
               child: loading
                   ? const Center(child: CircularProgressIndicator())
-                  : filtered.isEmpty
-                      ? const Center(child: Text('Пока нет чатов'))
-                      : ListView.builder(
-                          itemCount: filtered.length,
-                          itemBuilder: (context, index) {
-                            final chat = filtered[index];
-                            final chatId = chat['id'] as int;
-                            final title = (chat['title'] ?? 'Чат').toString();
+                  : err != null
+                      ? Center(
+                          child: Padding(
+                            padding: const EdgeInsets.all(24),
+                            child: Text(
+                              err!,
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                        )
+                      : filtered.isEmpty
+                          ? const Center(child: Text('Пока нет чатов'))
+                          : ListView.builder(
+                              itemCount: filtered.length,
+                              itemBuilder: (context, index) {
+                                final chat = filtered[index];
+                                final chatId = chat['id'] as int;
+                                final title =
+                                    (chat['title'] ?? 'Чат').toString();
 
-                            return ListTile(
-                              title: Text(title),
-                              subtitle: Text(_chatSubtitle(chat)),
-                              onTap: () {
-                                Navigator.of(context).push(
-                                  MaterialPageRoute(
-                                    builder: (_) => ChatViewScreen(
-                                      chatId: chatId,
-                                      title: title,
-                                    ),
+                                return ListTile(
+                                  title: Text(title),
+                                  subtitle: Text(_chatSubtitle(chat)),
+                                  onTap: () {
+                                    Navigator.of(context).push(
+                                      MaterialPageRoute(
+                                        builder: (_) => ChatViewScreen(
+                                          chatId: chatId,
+                                          title: title,
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                  trailing: PopupMenuButton<String>(
+                                    onSelected: (value) {
+                                      if (value == 'delete') {
+                                        _deleteChat(chatId);
+                                      }
+                                    },
+                                    itemBuilder: (_) => [
+                                      const PopupMenuItem(
+                                        value: 'delete',
+                                        child: Text('Удалить чат'),
+                                      ),
+                                    ],
                                   ),
                                 );
                               },
-                              trailing: PopupMenuButton<String>(
-                                onSelected: (value) {
-                                  if (value == 'delete') {
-                                    _deleteChat(chatId);
-                                  }
-                                },
-                                itemBuilder: (_) => [
-                                  const PopupMenuItem(
-                                    value: 'delete',
-                                    child: Text('Удалить чат'),
-                                  ),
-                                ],
-                              ),
-                            );
-                          },
-                        ),
+                            ),
             ),
           ],
         ),

@@ -52,6 +52,14 @@ class _CreateChatScreenState extends State<CreateChatScreen> {
       return;
     }
 
+    if (_isGroup && !Session.instance.canCreateGroupChats) {
+      setState(() {
+        _err =
+            'Групповые чаты может создавать только руководитель или администратор';
+      });
+      return;
+    }
+
     if (_isGroup && title.isEmpty) {
       setState(() {
         _err = 'Для группового чата укажи название';
@@ -85,6 +93,7 @@ class _CreateChatScreenState extends State<CreateChatScreen> {
       Navigator.of(context).pop(true);
     } catch (e) {
       if (!mounted) return;
+
       setState(() {
         _err = e.toString().replaceFirst('Exception: ', '');
         _busy = false;
@@ -94,8 +103,13 @@ class _CreateChatScreenState extends State<CreateChatScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final canCreateGroupChats = Session.instance.canCreateGroupChats;
+
     return Scaffold(
-      appBar: AppBar(title: const Text('Новый чат')),
+      backgroundColor: AppTheme.background,
+      appBar: AppBar(
+        title: const Text('Новый чат'),
+      ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -114,15 +128,29 @@ class _CreateChatScreenState extends State<CreateChatScreen> {
                         fontWeight: FontWeight.w800,
                       ),
                     ),
+
                     const SizedBox(height: 8),
+
                     const Text(
-                      'Можно создать личный или групповой защищённый чат и задать ему название.',
+                      'Можно создать личный защищённый чат. Групповые чаты доступны руководителю и администратору.',
                       style: TextStyle(
                         color: AppTheme.textSecondary,
                         height: 1.4,
                       ),
                     ),
+
+                    const SizedBox(height: 12),
+
+                    Chip(
+                      avatar: const Icon(
+                        Icons.verified_user_outlined,
+                        size: 18,
+                      ),
+                      label: Text('Роль: ${Session.instance.roleTitle}'),
+                    ),
+
                     const SizedBox(height: 16),
+
                     if (_err != null)
                       Container(
                         width: double.infinity,
@@ -140,17 +168,20 @@ class _CreateChatScreenState extends State<CreateChatScreen> {
                           ),
                         ),
                       ),
+
                     SwitchListTile(
                       contentPadding: EdgeInsets.zero,
                       title: const Text(
                         'Групповой чат',
                         style: TextStyle(fontWeight: FontWeight.w700),
                       ),
-                      subtitle: const Text(
-                        'Включите, если нужно несколько участников',
+                      subtitle: Text(
+                        canCreateGroupChats
+                            ? 'Доступно руководителю и администратору'
+                            : 'Недоступно для роли «Сотрудник»',
                       ),
                       value: _isGroup,
-                      onChanged: _busy
+                      onChanged: (_busy || !canCreateGroupChats)
                           ? null
                           : (v) {
                               setState(() {
@@ -158,7 +189,9 @@ class _CreateChatScreenState extends State<CreateChatScreen> {
                               });
                             },
                     ),
+
                     const SizedBox(height: 12),
+
                     TextField(
                       controller: _titleController,
                       enabled: !_busy,
@@ -172,7 +205,9 @@ class _CreateChatScreenState extends State<CreateChatScreen> {
                         prefixIcon: const Icon(Icons.edit_outlined),
                       ),
                     ),
+
                     const SizedBox(height: 14),
+
                     TextField(
                       controller: _membersController,
                       enabled: !_busy,
@@ -184,7 +219,9 @@ class _CreateChatScreenState extends State<CreateChatScreen> {
                         prefixIcon: Icon(Icons.group_outlined),
                       ),
                     ),
+
                     const SizedBox(height: 10),
+
                     const Text(
                       'Укажи логины пользователей через запятую.',
                       style: TextStyle(
@@ -192,7 +229,9 @@ class _CreateChatScreenState extends State<CreateChatScreen> {
                         color: AppTheme.textSecondary,
                       ),
                     ),
+
                     const SizedBox(height: 22),
+
                     FilledButton(
                       onPressed: _busy ? null : _create,
                       child: Text(_busy ? 'Создание...' : 'Создать чат'),
