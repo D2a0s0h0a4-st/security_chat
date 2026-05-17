@@ -1,0 +1,9 @@
+build/
+.dart_tool/
+.packages
+pubspec.lock
+android/.gradle
+android/local.properties
+ios/Pods/
+ios/.symlinks/
+windows/flutter/ephemeral/
